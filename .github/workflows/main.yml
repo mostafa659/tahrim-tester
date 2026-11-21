@@ -1,0 +1,40 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Check QURANLAB_KEY secret exists
+        env:
+          QURANLAB_KEY: ${{ secrets.QURANLAB_KEY }}
+        run: |
+          if [ -z "$QURANLAB_KEY" ]; then
+            echo "::error::Add a repository secret named QURANLAB_KEY (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+
+      - name: Build debug APK
+        env:
+          QURANLAB_KEY: ${{ secrets.QURANLAB_KEY }}
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tahrim-tester-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
