@@ -22,9 +22,9 @@ enum class WState { GOOD, BAD }
 data class WordStatus(val state: WState, val reasons: List<String>)
 data class Issue(val ayah: Int, val word: String, val reasons: List<String>)
 
-private val VOWELS = setOf("a", "i", "u", "aa", "ii", "uu")
+val VOWELS = setOf("a", "i", "u", "aa", "ii", "uu")
 
-private fun vowelAr(n: String): String? = when (n) {
+fun vowelAr(n: String): String? = when (n) {
     "a" -> "فتحة"
     "i" -> "كسرة"
     "u" -> "ضمة"
@@ -34,7 +34,7 @@ private fun vowelAr(n: String): String? = when (n) {
     else -> null
 }
 
-private fun unitAr(n: String): String = vowelAr(n) ?: "حرف «$n»"
+fun unitAr(n: String): String = vowelAr(n) ?: "حرف «$n»"
 
 private fun letterBefore(exp: List<ExpUnit>, from: Int): String? {
     var k = from

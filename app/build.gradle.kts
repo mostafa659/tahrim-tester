@@ -26,6 +26,25 @@ android {
         buildConfigField("String", "QURANLAB_KEY", "\"$quranLabKey\"")
     }
 
+    // مفتاح توقيع ثابت: كل بناء يُثبَّت فوق السابق ويحتفظ بالنموذج المنزَّل بدل إعادة التنزيل.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
+    buildTypes {
+        release {
+            // نسخة غير قابلة للتنقيح: أسرع على الهاتف (تُوقَّع بنفس المفتاح فتُثبَّت فوق النسخة التجريبية).
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
+            ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+        }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
