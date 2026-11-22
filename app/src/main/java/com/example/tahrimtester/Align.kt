@@ -2,18 +2,23 @@ package com.example.tahrimtester
 
 enum class Kind { MATCH, SUB, DEL, INS }
 
-/** خلية مقارنة: المتوقع (من المرجع) فوق، والمسموع (من النموذج) تحت. */
-data class Cell(val exp: String?, val heard: String?, val kind: Kind)
+/**
+ * خلية محاذاة. expIdx: موضع الوحدة في المتوقع (null للزائد)، heardIdx: موضعها في المسموع (null للناقص)،
+ * after: آخر وحدة متوقعة استُهلكت حتى هذه الخلية (تُستعمل لربط الزائد بكلمته).
+ */
+data class Cell(
+    val exp: String?, val heard: String?, val kind: Kind,
+    val expIdx: Int?, val heardIdx: Int?, val after: Int
+)
 
 /**
- * محاذاة بمسافة التحرير بين ما سمعه النموذج (heard) وما هو متوقع (expected).
- * نهاية المتوقع حرّة: ما لم يُقرأ بعد لا يُحسب نقصاً.
- * هذه فروق محتملة بين نصّين وليست حكماً على التلاوة.
+ * محاذاة بمسافة التحرير بين المسموع والمتوقع. نهاية المتوقع حرّة (ما لم يُقرأ بعد لا يُحسب نقصاً).
+ * فروق محتملة بين نصّين، وليست حكماً على التلاوة.
  */
 fun align(expected: List<String>, heard: List<String>): List<Cell> {
     val n = heard.size
     val m = expected.size
-    if (n == 0) return emptyList()
+    if (n == 0 || m == 0) return emptyList()
     val w = m + 1
     val d = IntArray((n + 1) * w)
     for (j in 0..m) d[j] = j
@@ -21,8 +26,8 @@ fun align(expected: List<String>, heard: List<String>): List<Cell> {
         d[i * w] = i
         for (j in 1..m) {
             val sub = d[(i - 1) * w + (j - 1)] + if (heard[i - 1] == expected[j - 1]) 0 else 1
-            val ins = d[(i - 1) * w + j] + 1      // صوت زائد مسموع
-            val del = d[i * w + (j - 1)] + 1      // متوقع غير مسموع
+            val ins = d[(i - 1) * w + j] + 1
+            val del = d[i * w + (j - 1)] + 1
             d[i * w + j] = minOf(sub, ins, del)
         }
     }
@@ -36,14 +41,14 @@ fun align(expected: List<String>, heard: List<String>): List<Cell> {
         if (i > 0 && j > 0) {
             val same = heard[i - 1] == expected[j - 1]
             if (d[i * w + j] == d[(i - 1) * w + (j - 1)] + (if (same) 0 else 1)) {
-                out.add(Cell(expected[j - 1], heard[i - 1], if (same) Kind.MATCH else Kind.SUB))
+                out.add(Cell(expected[j - 1], heard[i - 1], if (same) Kind.MATCH else Kind.SUB, j - 1, i - 1, j - 1))
                 i--; j--; continue
             }
         }
         if (i > 0 && d[i * w + j] == d[(i - 1) * w + j] + 1) {
-            out.add(Cell(null, heard[i - 1], Kind.INS)); i--
+            out.add(Cell(null, heard[i - 1], Kind.INS, null, i - 1, j - 1)); i--
         } else {
-            out.add(Cell(expected[j - 1], null, Kind.DEL)); j--
+            out.add(Cell(expected[j - 1], null, Kind.DEL, j - 1, null, j - 1)); j--
         }
     }
     out.reverse()
