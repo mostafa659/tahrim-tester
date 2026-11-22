@@ -101,10 +101,12 @@ fun analyze(
         val k = u.ayah * 100 + u.word
         val h = c.heardIdx
         val settled = h != null && h < settledN
-        when (c.kind) {
-            Kind.MATCH -> if (settled) good[k] = (good[k] ?: 0) + 1
-            Kind.DEL -> if (p < lastSettledPos) bad.getOrPut(k) { ArrayList() }.add(describe(c, exp))
-            else -> if (settled) bad.getOrPut(k) { ArrayList() }.add(describe(c, exp))
+        if (c.kind == Kind.MATCH) {
+            if (settled) good[k] = (good[k] ?: 0) + 1
+        } else if (c.kind == Kind.DEL) {
+            if (p < lastSettledPos) bad.getOrPut(k) { ArrayList() }.add(describe(c, exp))
+        } else {
+            if (settled) bad.getOrPut(k) { ArrayList() }.add(describe(c, exp))
         }
     }
 
