@@ -11,16 +11,20 @@ fun loadMushaf(ctx: Context): List<List<String>> = try {
     emptyList()
 }
 
-/** بعض خطوط الأندرويد القديمة لا تحوي رموز التنوين المفتوح؛ نستبدلها للعرض فقط. */
-fun disp(s: String): String =
-    s.replace('\u08F0', '\u064B').replace('\u08F1', '\u064C').replace('\u08F2', '\u064D')
-
 fun arabicDigits(n: Int): String = n.toString().map { '\u0660' + (it - '0') }.joinToString("")
 
 data class ExpUnit(val name: String, val ayah: Int, val word: Int)
+
 enum class WState { GOOD, BAD }
-data class WordStatus(val state: WState, val reasons: List<String>)
-data class Issue(val ayah: Int, val word: String, val reasons: List<String>)
+
+/** ملاحظة على كلمة: نوع الخطأ، لماذا، التصحيح، ومستوى الثقة (1 احتمال، 2 مرجّح، 3 قوي). */
+data class Note(val type: String, val explain: String, val fix: String, val level: Int, val experimental: Boolean)
+
+data class WordStatus(val state: WState, val notes: List<Note>)
+
+data class Issue(val ayah: Int, val word: Int, val text: String, val notes: List<Note>)
+
+data class Review(val states: Map<Int, WordStatus>, val issues: List<Issue>, val judged: Int, val good: Int)
 
 val VOWELS = setOf("a", "i", "u", "aa", "ii", "uu")
 
@@ -36,97 +40,41 @@ fun vowelAr(n: String): String? = when (n) {
 
 fun unitAr(n: String): String = vowelAr(n) ?: "حرف «$n»"
 
-private fun letterBefore(exp: List<ExpUnit>, from: Int): String? {
-    var k = from
-    while (k >= 0) {
-        if (k < exp.size && exp[k].name !in VOWELS) return exp[k].name
-        k--
-    }
-    return null
-}
-
-/** سبب الاختلاف بجملة عربية قصيرة، بوصفه قراءة التطبيق لما سمعه النموذج. */
-private fun describe(c: Cell, exp: List<ExpUnit>): String {
-    return when (c.kind) {
-        Kind.SUB -> {
-            val e = c.exp ?: ""
-            val h = c.heard ?: ""
-            val letter = letterBefore(exp, (c.expIdx ?: 0) - 1)
-            val at = if (letter != null) " بعد «$letter»" else ""
-            if (e in VOWELS && h in VOWELS) {
-                if (e[0] == h[0]) "المدّ$at: المتوقع ${unitAr(e)} والمسموع ${unitAr(h)}"
-                else "الحركة$at: المتوقع ${unitAr(e)} والمسموع ${unitAr(h)}"
-            } else "المتوقع ${unitAr(e)} والمسموع ${unitAr(h)}"
-        }
-        Kind.DEL -> {
-            val e = c.exp ?: ""
-            val letter = letterBefore(exp, (c.expIdx ?: 0) - 1)
-            if (e in VOWELS) "لم تُسمع ${unitAr(e)}" + (if (letter != null) " بعد «$letter»" else "")
-            else "لم يُسمع ${unitAr(e)}"
-        }
-        Kind.INS -> {
-            val h = c.heard ?: ""
-            val letter = letterBefore(exp, c.after)
-            if (h in VOWELS) "سُمعت ${unitAr(h)} زائدة" + (if (letter != null) " بعد «$letter»" else "")
-            else "سُمع ${unitAr(h)} زائد"
-        }
-        Kind.MATCH -> ""
-    }
-}
+/** نتيجة التحليل اللحظي: الكلمات المطابقة بثقة، ومكان القارئ الآن (مفتاح الكلمة = آية*100+رقمها). */
+class LiveView(val good: Set<Int>, val cursor: Int)
 
 /**
- * يحوّل المحاذاة إلى حالة لكل كلمة: أخضر عند تطابق كل وحدات الكلمة المستقرة،
- * أحمر عند أي اختلاف مستقر، وبلا لون ما لم يُقرأ بعد. المفتاح: ayah*100+wordIndex.
+ * تحليل لحظي خفيف: لا يُظهر إلا ما تطابق مع المتوقع (أخضر)، ولا يحكم بالخطأ.
+ * الأحكام بالخطأ تأتي فقط من الحكم المعاير بعد انتهاء التلاوة.
  */
-fun analyze(
-    exp: List<ExpUnit>, cells: List<Cell>, settledN: Int,
-    words: List<List<String>>, mism: Set<Int>
-): Pair<Map<Int, WordStatus>, List<Issue>> {
-    if (exp.isEmpty() || cells.isEmpty()) return emptyMap<Int, WordStatus>() to emptyList()
-
+fun liveAnalyze(exp: List<ExpUnit>, cells: List<Cell>, settledN: Int, mism: Set<Int>): LiveView {
+    if (exp.isEmpty() || cells.isEmpty()) return LiveView(emptySet(), -1)
     val unitsPer = HashMap<Int, Int>()
     exp.forEach { u -> val k = u.ayah * 100 + u.word; unitsPer[k] = (unitsPer[k] ?: 0) + 1 }
-
-    var lastSettledPos = -1
-    cells.forEachIndexed { p, c ->
-        val h = c.heardIdx
-        if (h != null && h < settledN) lastSettledPos = p
-    }
-
-    val bad = LinkedHashMap<Int, MutableList<String>>()
     val good = HashMap<Int, Int>()
-    cells.forEachIndexed { p, c ->
-        val idx = (c.expIdx ?: c.after).coerceIn(0, exp.size - 1)
+    val bad = HashSet<Int>()
+    var lastExp = -1
+    for (c in cells) {
+        val ei = c.expIdx
+        if (ei != null && ei > lastExp) lastExp = ei
+        val idx = (ei ?: c.after).coerceIn(0, exp.size - 1)
         val u = exp[idx]
         val k = u.ayah * 100 + u.word
         val h = c.heardIdx
-        val settled = h != null && h < settledN
-        if (c.kind == Kind.MATCH) {
-            if (settled) good[k] = (good[k] ?: 0) + 1
-        } else if (c.kind == Kind.DEL) {
-            if (p < lastSettledPos) bad.getOrPut(k) { ArrayList() }.add(describe(c, exp))
-        } else {
-            if (settled) bad.getOrPut(k) { ArrayList() }.add(describe(c, exp))
+        if (h == null || h >= settledN) continue
+        if (c.kind == Kind.MATCH) good[k] = (good[k] ?: 0) + 1 else bad.add(k)
+    }
+    val goodSet = HashSet<Int>()
+    for ((k, n) in good) if (n == unitsPer[k] && k !in bad && k / 100 !in mism) goodSet.add(k)
+    var cursor = -1
+    if (lastExp >= 0) {
+        val kc = exp[lastExp].ayah * 100 + exp[lastExp].word
+        cursor = kc
+        if (kc in goodSet) {
+            var j = lastExp + 1
+            while (j < exp.size && exp[j].ayah * 100 + exp[j].word == kc) j++
+            if (j < exp.size) cursor = exp[j].ayah * 100 + exp[j].word
         }
     }
-
-    val states = HashMap<Int, WordStatus>()
-    val issues = ArrayList<Issue>()
-    for (k in unitsPer.keys.sorted()) {
-        val a = k / 100
-        val w = k % 100
-        val r = bad[k]
-        if (r != null && r.isNotEmpty()) {
-            val reasons = r.distinct()
-            if (a !in mism) {
-                states[k] = WordStatus(WState.BAD, reasons)
-                issues.add(Issue(a, words.getOrNull(a - 1)?.getOrNull(w) ?: "", reasons))
-            } else {
-                issues.add(Issue(a, "", reasons))
-            }
-        } else if (a !in mism && good[k] == unitsPer[k]) {
-            states[k] = WordStatus(WState.GOOD, emptyList())
-        }
-    }
-    return states to issues
+    return LiveView(goodSet, cursor)
 }

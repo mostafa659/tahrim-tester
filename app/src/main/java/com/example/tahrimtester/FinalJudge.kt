@@ -26,9 +26,14 @@ private fun lae(a: Double, b: Double): Double {
     return if (a > b) a + ln1p(exp(b - a)) else b + ln1p(exp(a - b))
 }
 
+/** مصفوفة مخرج من مخرجات الشبكة [frames × classes] بترتيب الصفوف (log-probs). */
+class HeadMat(val frameMs: Int, val frames: Int, val classes: Int, val values: FloatArray)
+
+fun TajweedHead.toMat(): HeadMat = HeadMat(frameMs, frames, classes, values)
+
 private class Emit(val t: Int, val c: Int, val v: FloatArray)
 
-private fun slice(h: TajweedHead, f0: Int, f1: Int, mergeBar: Boolean, blank: Int, bar: Int): Emit {
+private fun slice(h: HeadMat, f0: Int, f1: Int, mergeBar: Boolean, blank: Int, bar: Int): Emit {
     val t = f1 - f0
     val c = h.classes
     val out = FloatArray(t * c)
@@ -182,12 +187,12 @@ private fun bestLlr(lat: Lattice?, pos: Int, kind: Int, alts: List<Int>): Best? 
     return Best(llr, bestAlt)
 }
 
-private class RawSite(val unit: Int, val gap: Boolean, val cls: String, val llr: Double, val alt: String)
+internal class RawSite(val unit: Int, val gap: Boolean, val cls: String, val llr: Double, val alt: String)
 
 private fun isLetter(n: String) = n.length == 1 && n[0] in '\u0621'..'\u064A'
 
-private fun judgeUnits(
-    lpH: TajweedHead, i1H: TajweedHead?, t0Ms: Long, t1Ms: Long, units: IntArray, tok: TajweedTokens,
+internal fun judgeUnits(
+    lpH: HeadMat, i1H: HeadMat?, t0Ms: Long, t1Ms: Long, units: IntArray, tok: TajweedTokens,
     active: (String) -> Boolean, weight: (String) -> Double
 ): List<RawSite> {
     val blank = tok.blank
@@ -198,7 +203,7 @@ private fun judgeUnits(
         var k = 0
         units.forEachIndexed { i, u -> if (u != bar) { idxLp[k] = i; k++ } }
     }
-    fun frames(h: TajweedHead): IntArray {
+    fun frames(h: HeadMat): IntArray {
         val f0 = max(0, (t0Ms / h.frameMs).toInt())
         val f1 = min(h.frames, (t1Ms / h.frameMs).toInt() + 1)
         return intArrayOf(f0, f1)
@@ -276,8 +281,8 @@ fun judgeTake(
         info.appendLine("head $n: kind=${h.kind} frameMs=${h.frameMs} frames=${h.frames} classes=${h.classes} ${h.classNames.take(12)}")
     }
     fun fail(why: String) = FinalResult(emptyList(), emptySet(), info.toString() + "FAIL: $why\n")
-    val lpH = heads["log_probs"] ?: return fail("no log_probs head")
-    val i1H = heads["inter1_log_probs"]
+    val lpH = heads["log_probs"]?.toMat() ?: return fail("no log_probs head")
+    val i1H = heads["inter1_log_probs"]?.toMat()
     if (i1H == null) info.appendLine("inter1_log_probs missing: judging on log_probs only")
     val bar = tok.wordBar
     val toks = heads.decoded().tokens.filter { it.id != bar }
@@ -330,23 +335,7 @@ fun judgeTake(
         val t1 = toks[hIdx.max()].lastMs + 500
         val raw = judgeUnits(lpH, i1H, t0, t1, trunc.toIntArray(), tok, active, weight)
 
-        for (r in raw) {
-            val k = if (r.gap) max(0, r.unit - 1) else r.unit
-            if (f0 + k >= expUnits.size) continue
-            val u = expUnits[f0 + k]
-            var prev: String? = null
-            if (r.gap) {
-                prev = if (r.unit >= 1) expUnits[f0 + r.unit - 1].name else null
-            } else {
-                var j = k - 1
-                while (j >= 0) {
-                    val nm = expUnits[f0 + j].name
-                    if (nm !in VOWELS) { prev = nm; break }
-                    j--
-                }
-            }
-            sites.add(Site(a, u.word, if (r.gap) "" else u.name, prev, r.cls, r.llr, r.alt))
-        }
+        sites.addAll(toSites(raw, expUnits, IntArray(trunc.count { it != bar }) { f0 + it }, null))
 
         // الكلمات التي اكتملت وحداتها ضمن الجزء المقروء تُعدّ محكومة.
         val lastOfWord = HashMap<Int, Int>()
@@ -357,53 +346,37 @@ fun judgeTake(
     return FinalResult(sites, judged, info.toString())
 }
 
-fun describeSite(s: Site, status: String): String {
-    val at = if (s.prevLetter != null) " بعد «${s.prevLetter}»" else ""
-    val core = when (s.cls) {
-        "vowel_sub" -> "الحركة$at: المتوقع ${unitAr(s.unitName)} والأقرب لما سُمع ${unitAr(s.alt)}"
-        "short_to_long" -> "مدّ زائد$at: المتوقع ${unitAr(s.unitName)} والمسموع أقرب إلى ${unitAr(s.alt)}"
-        "long_to_short" -> "مدّ ناقص$at: المتوقع ${unitAr(s.unitName)} والمسموع أقرب إلى ${unitAr(s.alt)}"
-        "vowel_del" -> "لم تُسمع ${unitAr(s.unitName)}$at"
-        "cons_del" -> "لم يُسمع ${unitAr(s.unitName)}"
-        "cons_sub" -> "المتوقع ${unitAr(s.unitName)} والأقرب لما سُمع ${unitAr(s.alt)}"
-        "vowel_ins" -> "سُمعت ${unitAr(s.alt)} زائدة$at"
-        "insertion" -> "سُمع ${unitAr(s.alt)} زائد$at"
-        else -> "${s.cls}: ${s.unitName} ← ${s.alt}"
-    }
-    val tag = when (status) {
-        "experimental" -> " (تجريبي)"
-        "unverified" -> " (غير مؤكد)"
-        else -> ""
-    }
-    return core + tag + " · قوة الدليل " + String.format(java.util.Locale.US, "%.1f", s.llr)
-}
-
-/** يطبّق عتبات الحساسية المختارة على نتائج الحكم المعاير، دون إعادة الحساب. */
+/** يطبّق عتبات مستوى التنبيه المختار على نتائج الحكم المعاير، دون إعادة الحساب. */
 fun buildFinal(
     res: FinalResult, cal: TajweedCalibration, ctx: String, preset: String,
     words: List<List<String>>, mism: Set<Int>
-): Pair<Map<Int, WordStatus>, List<Issue>> {
-    val bad = LinkedHashMap<Int, MutableList<String>>()
+): Review {
+    val bad = LinkedHashMap<Int, MutableList<Note>>()
     for (s in res.sites.sortedWith(compareBy({ it.ayah }, { it.word }))) {
         val thr = cal.threshold(ctx, s.cls, preset) ?: continue
         val st = cal.status(ctx, s.cls) ?: continue
         if (st == "off") continue
-        if (s.llr > thr) bad.getOrPut(s.ayah * 100 + s.word) { ArrayList() }.add(describeSite(s, st))
+        if (s.llr > thr) {
+            val margin = s.llr - thr
+            val level = if (margin < 1.5) 1 else if (margin < 5.0) 2 else 3
+            bad.getOrPut(s.ayah * 100 + s.word) { ArrayList() }.add(noteFor(s, level, st != "validated"))
+        }
     }
     val states = HashMap<Int, WordStatus>()
-    val issues = ArrayList<Issue>()
     for (k in res.judged.sorted()) {
-        val a = k / 100
-        if (a in mism) continue
+        if (k / 100 in mism) continue
         val r = bad[k]
         states[k] = if (r != null && r.isNotEmpty()) WordStatus(WState.BAD, r) else WordStatus(WState.GOOD, emptyList())
     }
+    val issues = ArrayList<Issue>()
     for ((k, r) in bad.entries.sortedBy { it.key }) {
         val a = k / 100
         val w = k % 100
-        issues.add(Issue(a, if (a in mism) "" else (words.getOrNull(a - 1)?.getOrNull(w) ?: ""), r.distinct()))
+        val text = if (a in mism) "" else (words.getOrNull(a - 1)?.getOrNull(w) ?: "")
+        issues.add(Issue(a, w, text, r.distinctBy { it.explain }.sortedByDescending { it.level }))
     }
-    return states to issues
+    val good = states.values.count { it.state == WState.GOOD }
+    return Review(states, issues, states.size, good)
 }
 
 /** لقطة من المعايرة للتشخيص (لأجل ضبط الأحكام الأخرى: المدّ والقلقلة). */
@@ -449,4 +422,225 @@ fun judgeReport(res: FinalResult, cal: TajweedCalibration, ctx: String): String 
         sb.appendLine("آية ${s.ayah} كلمة ${s.word} ${s.cls} ${s.unitName}->${s.alt} llr=${f1(s.llr)}")
     }
     return sb.toString()
+}
+
+
+// ───────── ربط المواضع بالكلمات، والحكم المحلي اللحظي ─────────
+
+/** يحوّل مواضع الحكم الخام إلى مواضع على كلمات السورة. gIdx: الوحدة المحلية ← فهرسها العام في المتوقع. */
+internal fun toSites(raw: List<RawSite>, exp: List<ExpUnit>, gIdx: IntArray, wordKey: Int?): List<Site> {
+    val out = ArrayList<Site>()
+    for (r in raw) {
+        val k = if (r.gap) max(0, r.unit - 1) else r.unit
+        if (k >= gIdx.size) continue
+        val gi = gIdx[k]
+        if (gi < 0 || gi >= exp.size) continue
+        val u = exp[gi]
+        if (wordKey != null && u.ayah * 100 + u.word != wordKey) continue
+        var prev: String? = null
+        if (r.gap) {
+            prev = if (r.unit >= 1 && r.unit - 1 < gIdx.size) exp[gIdx[r.unit - 1]].name else null
+        } else {
+            var j = gi - 1
+            while (j >= 0 && exp[j].ayah == u.ayah) {
+                val nm = exp[j].name
+                if (nm !in VOWELS) { prev = nm; break }
+                j--
+            }
+        }
+        out.add(Site(u.ayah, u.word, if (r.gap) "" else u.name, prev, r.cls, r.llr, r.alt))
+    }
+    return out
+}
+
+/** نطاق وحدات كلمة في المتوقع (فهارس عامة). */
+class WordRange(val key: Int, val ayah: Int, val word: Int, val first: Int, val last: Int, val ayahLast: Int)
+
+fun buildWordRanges(exp: List<ExpUnit>): List<WordRange> {
+    val out = ArrayList<WordRange>()
+    val ayahLast = HashMap<Int, Int>()
+    exp.forEachIndexed { i, u -> ayahLast[u.ayah] = i }
+    var i = 0
+    while (i < exp.size) {
+        val u = exp[i]
+        var j = i
+        while (j + 1 < exp.size && exp[j + 1].ayah == u.ayah && exp[j + 1].word == u.word) j++
+        out.add(WordRange(u.ayah * 100 + u.word, u.ayah, u.word, i, j, ayahLast[u.ayah] ?: j))
+        i = j + 1
+    }
+    return out
+}
+
+/**
+ * حكم محلي لكلمة واحدة بمجرد اكتمالها: نافذة من الكلمة السابقة حتى وحدتين بعد الكلمة،
+ * فتحسب فروق الاحتمال على الإطارات المحيطة بها فقط. يُعيد null إن لم يكن هناك صوت مسموع لها.
+ */
+fun judgeWordLocal(
+    lp: HeadMat, i1: HeadMat?, tok: TajweedTokens, exp: List<ExpUnit>, cellByExp: Array<Cell?>,
+    firstMs: LongArray, lastMs: LongArray, wr: WordRange, prevFirst: Int,
+    active: (String) -> Boolean, weight: (String) -> Double
+): List<Site>? {
+    val from = prevFirst
+    val to = min(wr.last + 2, wr.ayahLast)
+    var hMin = Int.MAX_VALUE
+    var hMax = -1
+    for (k in from..to) {
+        val h = cellByExp.getOrNull(k)?.heardIdx ?: continue
+        if (h < hMin) hMin = h
+        if (h > hMax) hMax = h
+    }
+    if (hMax < 0 || hMax >= firstMs.size) return null
+    val ids = ArrayList<Int>()
+    val gIdx = ArrayList<Int>()
+    var prevWord = -1
+    for (k in from..to) {
+        val u = exp[k]
+        val id = tok.id(u.name) ?: continue
+        if (prevWord != -1 && u.word != prevWord) ids.add(tok.wordBar)
+        ids.add(id)
+        gIdx.add(k)
+        prevWord = u.word
+    }
+    if (gIdx.isEmpty()) return null
+    val raw = judgeUnits(lp, i1, firstMs[hMin] - 400, lastMs[hMax] + 400, ids.toIntArray(), tok, active, weight)
+    return toSites(raw, exp, gIdx.toIntArray(), wr.key)
+}
+
+// ───────── الشرح البسيط للأخطاء ─────────
+
+private fun hk(n: String): String = when (n) {
+    "a" -> "فتحة"; "i" -> "كسرة"; "u" -> "ضمة"
+    "aa" -> "مدّ بالألف"; "ii" -> "مدّ بالياء"; "uu" -> "مدّ بالواو"
+    else -> "حرف «$n»"
+}
+
+private fun hkDef(n: String): String = when (n) {
+    "a" -> "الفتحة"; "i" -> "الكسرة"; "u" -> "الضمة"
+    "aa" -> "المدّ بالألف"; "ii" -> "المدّ بالياء"; "uu" -> "المدّ بالواو"
+    else -> "حرف «$n»"
+}
+
+private fun vstate(n: String): String = when (n) {
+    "a" -> "مفتوحة"; "i" -> "مكسورة"; "u" -> "مضمومة"
+    "aa" -> "ممدودة بالألف"; "ii" -> "ممدودة بالياء"; "uu" -> "ممدودة بالواو"
+    else -> ""
+}
+
+/** ملاحظة كاملة: نوع الخطأ، لماذا، والتصحيح، بلغة بسيطة. */
+fun noteFor(s: Site, level: Int, experimental: Boolean): Note {
+    val L = s.prevLetter
+    val letter = if (L != null) "«$L»" else "الحرف"
+    val at = if (L != null) " بعد «$L»" else ""
+    val e = s.unitName
+    val a = s.alt
+    return when (s.cls) {
+        "vowel_sub" -> Note(
+            "حركة مختلفة",
+            "على $letter سُمعت ${hk(a)} بدل ${hkDef(e)} المتوقعة.",
+            "الصحيح: انطق $letter ${vstate(e)}.", level, experimental
+        )
+        "short_to_long" -> Note(
+            "مدّ زائد",
+            "مددتَ $letter أكثر من اللازم (سُمعت ${hk(a)} بدل ${hkDef(e)}).",
+            "الصحيح: انطق $letter ${vstate(e)} دون مدّ.", level, experimental
+        )
+        "long_to_short" -> Note(
+            "مدّ ناقص",
+            "لم تُمدّ $letter بما يكفي (سُمعت ${hk(a)} بدل ${hkDef(e)}).",
+            "الصحيح: انطق $letter ${vstate(e)} وأطل المدّ حركتين على الأقل.", level, experimental
+        )
+        "vowel_del" -> Note(
+            "حركة ناقصة",
+            "لم تُسمع ${hkDef(e)} على $letter.",
+            "الصحيح: انطق $letter ${vstate(e)}.", level, experimental
+        )
+        "cons_del" -> Note(
+            "حرف ناقص",
+            "لم يُسمع حرف «$e».",
+            "الصحيح: انطق حرف «$e» بوضوح.", level, experimental
+        )
+        "cons_sub" -> Note(
+            "حرف مختلف",
+            "سُمع حرف أقرب إلى «$a» بدل «$e».",
+            "الصحيح: أخرج حرف «$e» من مخرجه.", level, experimental
+        )
+        "vowel_ins" -> Note(
+            "حركة زائدة",
+            "سُمعت ${hk(a)} زائدة$at.",
+            "الصحيح: لا تُتبع $letter بحركة هنا.", level, experimental
+        )
+        "insertion" -> Note(
+            "صوت زائد",
+            "سُمع حرف «$a» زائد$at.",
+            "الصحيح: لا تُضف صوتاً$at.", level, experimental
+        )
+        else -> Note(s.cls, "${s.cls}: ${s.unitName} ← ${s.alt}", "", level, experimental)
+    }
+}
+
+// ───────── بديل احتياطي: حكم من الأصوات المسموعة وحدها ─────────
+
+private fun siteFromCell(c: Cell, exp: List<ExpUnit>): Site? {
+    val idx = (c.expIdx ?: c.after).coerceIn(0, exp.size - 1)
+    val u = exp[idx]
+    var prev: String? = null
+    var j = (if (c.kind == Kind.INS) idx else idx - 1)
+    while (j >= 0 && exp[j].ayah == u.ayah) {
+        val nm = exp[j].name
+        if (nm !in VOWELS) { prev = nm; break }
+        j--
+    }
+    val e = c.exp ?: ""
+    val h = c.heard ?: ""
+    val cls = when (c.kind) {
+        Kind.SUB ->
+            if (e in VOWELS && h in VOWELS) {
+                if (e[0] == h[0]) (if (e.length < h.length) "short_to_long" else "long_to_short") else "vowel_sub"
+            } else "cons_sub"
+        Kind.DEL -> if (e in VOWELS) "vowel_del" else "cons_del"
+        Kind.INS -> if (h in VOWELS) "vowel_ins" else "insertion"
+        Kind.MATCH -> return null
+    }
+    return Site(u.ayah, u.word, e, prev, cls, 0.0, if (h.isEmpty()) "∅" else h)
+}
+
+/** حكم احتياطي (عند غياب المعايرة أو تعذّر مزامنة المخرجات): يقارن الأصوات المسموعة بالمتوقع فقط. */
+fun greedyReview(exp: List<ExpUnit>, cells: List<Cell>, settledN: Int, mism: Set<Int>): Review {
+    if (exp.isEmpty() || cells.isEmpty()) return Review(emptyMap(), emptyList(), 0, 0)
+    val unitsPer = HashMap<Int, Int>()
+    exp.forEach { u -> val k = u.ayah * 100 + u.word; unitsPer[k] = (unitsPer[k] ?: 0) + 1 }
+    var lastSettledPos = -1
+    cells.forEachIndexed { p, c ->
+        val h = c.heardIdx
+        if (h != null && h < settledN) lastSettledPos = p
+    }
+    val good = HashMap<Int, Int>()
+    val bad = LinkedHashMap<Int, MutableList<Note>>()
+    cells.forEachIndexed { p, c ->
+        val idx = (c.expIdx ?: c.after).coerceIn(0, exp.size - 1)
+        val u = exp[idx]
+        val k = u.ayah * 100 + u.word
+        val h = c.heardIdx
+        val settled = h != null && h < settledN
+        if (c.kind == Kind.MATCH) {
+            if (settled) good[k] = (good[k] ?: 0) + 1
+        } else if (c.kind == Kind.DEL) {
+            if (p < lastSettledPos) siteFromCell(c, exp)?.let { bad.getOrPut(k) { ArrayList() }.add(noteFor(it, 1, true)) }
+        } else if (settled) {
+            siteFromCell(c, exp)?.let { bad.getOrPut(k) { ArrayList() }.add(noteFor(it, 1, true)) }
+        }
+    }
+    val states = HashMap<Int, WordStatus>()
+    for (k in unitsPer.keys.sorted()) {
+        if (k / 100 in mism) continue
+        val r = bad[k]
+        if (r != null && r.isNotEmpty()) states[k] = WordStatus(WState.BAD, r.distinctBy { it.explain })
+        else if (good[k] == unitsPer[k]) states[k] = WordStatus(WState.GOOD, emptyList())
+    }
+    val issues = ArrayList<Issue>()
+    for ((k, r) in bad.entries.sortedBy { it.key }) {
+        if (k / 100 in mism) continue
+        issues.add(Issue(k / 100, k % 100, "", r.distinctBy { it.explain }))
+    }
+    return Review(states, issues, states.size, states.values.count { it.state == WState.GOOD })
 }

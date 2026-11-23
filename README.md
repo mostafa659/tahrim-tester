@@ -1,10 +1,10 @@
-# اختبار سورة التحريم — TajweedFormer V4
+# مرتّل — سورة التحريم
 
-1. أنشئ مستودعاً على GitHub وارفع هذا المجلد كما هو.
-2. من Settings ← Secrets and variables ← Actions أضف سرّاً باسم `QURANLAB_KEY` وقيمته مفتاح التطبيق.
-3. تبويب Actions ← Build APK ← Run workflow (أو أي push).
-4. حمّل ملف الـ APK من قسم Artifacts في نهاية التشغيل وثبّته.
+1. ارفع محتوى هذا المجلد إلى مستودع GitHub (استبدل الملفات القديمة كلها).
+2. أبقِ السرّ `QURANLAB_KEY` في Settings ← Secrets and variables ← Actions.
+3. Actions ← Build APK ← Run workflow، ثم نزّل `app-release.apk` من Artifacts.
 
-محلياً: انسخ `local.properties.example` إلى `local.properties` وضع المفتاح فيه (مُتجاهَل في git).
+داخل التطبيق: أيقونة «التقرير» أعلى الشاشة تجمع كل بيانات الاختبار والتشخيص، وفيها زر «نسخ التقرير بالكامل».
 
-ملاحظة: النموذج يسمع وينقل ما سمعه فقط، وليس حكماً شرعياً على التلاوة (شرط الترخيص NPL-1.2).
+الخط: Scheherazade New (SIL OFL) — ترخيصه في `app/src/main/assets/licenses/`.
+النموذج: TajweedFormer V4 من Quran Lab (NPL-1.2). التقييم آلي وقد يخطئ، وليس حكماً شرعياً.
